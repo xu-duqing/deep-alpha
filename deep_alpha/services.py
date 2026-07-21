@@ -21,6 +21,15 @@ class KlineQuery:
     end: str | None
     fields: list[str]
     freq: str = "day"
+    adjust: str = "none"
+
+
+@dataclass(frozen=True)
+class UniverseInfo:
+    name: str
+    instrument_count: int
+    start: str | None
+    end: str | None
 
 
 def validate_date(value: str | None) -> str | None:
@@ -60,6 +69,31 @@ def read_symbols(provider: Path) -> list[str]:
     return sorted(symbols)
 
 
+def read_universes(provider: Path) -> list[UniverseInfo]:
+    universes: list[UniverseInfo] = []
+    for path in sorted((provider / "instruments").glob("*.txt")):
+        symbols: set[str] = set()
+        starts: list[str] = []
+        ends: list[str] = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            columns = line.strip().split()
+            if not columns:
+                continue
+            symbols.add(columns[0].upper())
+            if len(columns) >= 3:
+                starts.append(columns[1])
+                ends.append(columns[2])
+        universes.append(
+            UniverseInfo(
+                name=path.stem,
+                instrument_count=len(symbols),
+                start=min(starts) if starts else None,
+                end=max(ends) if ends else None,
+            )
+        )
+    return universes
+
+
 def read_fields(provider: Path) -> list[str]:
     fields: set[str] = set()
     for path in (provider / "features").glob("*/*"):
@@ -97,9 +131,15 @@ class MarketDataService:
         start = start or calendars[0]
         end = end or calendars[-1]
         symbol = normalize_symbol(query.symbol, read_symbols(self.provider))
+        adjustable_fields = set(query.fields) & {
+            "open", "high", "low", "close", "volume", "vwap"
+        }
+        qlib_fields = [FIELD_MAP[field] for field in query.fields]
+        if adjustable_fields:
+            qlib_fields.append("$factor")
         frame = self.client.features(
             instruments=[symbol],
-            fields=[FIELD_MAP[field] for field in query.fields],
+            fields=qlib_fields,
             start_time=start,
             end_time=end,
             freq=query.freq,
@@ -124,6 +164,29 @@ class MarketDataService:
         missing = [name for name in query.fields if name not in result.columns]
         if missing:
             raise QueryError(f"Qlib result is missing fields: {', '.join(missing)}")
+        if adjustable_fields:
+            factor = result.get("$factor")
+            if factor is None or factor.isna().all() or (factor == 0).any():
+                raise QueryError("Qlib factor data is required for price adjustment")
+            anchor = factor
+            if query.adjust in {"qfq", "hfq"}:
+                anchor_frame = self.client.features(
+                    instruments=[symbol],
+                    fields=["$factor"],
+                    start_time=calendars[0],
+                    end_time=calendars[-1],
+                    freq=query.freq,
+                )
+                anchors = anchor_frame["$factor"].dropna()
+                if anchors.empty or (anchors == 0).any():
+                    raise QueryError("Qlib factor data is required for price adjustment")
+                anchor = anchors.iloc[-1] if query.adjust == "qfq" else anchors.iloc[0]
+            for field in adjustable_fields - {"volume"}:
+                result[field] = result[field] / anchor
+            if "volume" in adjustable_fields:
+                # Qlib stores volume inversely normalized by the daily factor.
+                # Keep actual traded volume unchanged for every price mode.
+                result["volume"] = result["volume"] * factor
         result["symbol"] = symbol
         result = result.loc[:, ["datetime", "symbol", *query.fields]]
         return result.sort_values(by="datetime")

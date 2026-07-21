@@ -1,6 +1,7 @@
 """Lazy wrapper around Microsoft Qlib."""
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from .errors import QueryError
@@ -26,7 +27,16 @@ class QlibClient:
                 "Qlib is not installed. Please install Microsoft Qlib before querying data."
             ) from exc
         try:
-            qlib.init(provider_uri=str(self.provider_uri), region=REG_CN)
+            log_level = (
+                logging.DEBUG
+                if logging.getLogger().isEnabledFor(logging.DEBUG)
+                else logging.WARNING
+            )
+            qlib.init(
+                provider_uri=str(self.provider_uri),
+                region=REG_CN,
+                logging_level=log_level,
+            )
         except Exception as exc:
             raise QueryError(f"Failed to initialize Qlib: {exc}") from exc
         self.data = D

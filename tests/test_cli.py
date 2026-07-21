@@ -1,9 +1,10 @@
+from datetime import date
 from pathlib import Path
 
 import pytest
 
-from deep_alpha.errors import ArgumentError
-from deep_alpha.main import build_parser, run
+from deep_alpha.errors import ArgumentError, ProviderError
+from deep_alpha.main import build_parser, default_start_date, download_release, run
 
 
 def make_provider(path: Path):
@@ -19,8 +20,15 @@ def make_provider(path: Path):
 
 def test_parser_kline_defaults():
     args = build_parser().parse_args(["kline", "--symbol", "600519"])
-    assert args.format == "csv"
+    assert args.format == "json"
     assert args.region == "cn"
+    assert args.start == default_start_date()
+
+
+def test_default_start_date_handles_month_boundaries():
+    assert default_start_date(date(2026, 7, 21)) == "2026-06-21"
+    assert default_start_date(date(2024, 3, 31)) == "2024-02-29"
+    assert default_start_date(date(2026, 1, 31)) == "2025-12-31"
 
 
 def test_provider_uri_is_accepted_before_or_after_subcommand():
@@ -47,11 +55,18 @@ def test_info_reports_discovered_fields(tmp_path):
     result = run(args)
     assert result is not None
     assert "fields: close" in result
+    assert "datasets:" in result
+    assert "all: 2 instruments, 2024-01-02 to 2024-01-03" in result
 
 
-def test_unsupported_adjust(tmp_path):
-    provider = tmp_path / "provider"
-    make_provider(provider)
-    args = build_parser().parse_args(["kline", "--provider-uri", str(provider), "--symbol", "SH600519", "--adjust", "qfq"])
-    with pytest.raises(ArgumentError, match="Only"):
-        run(args)
+def test_download_existing_target_fails_before_network(tmp_path, monkeypatch):
+    target = tmp_path / "provider"
+    target.mkdir()
+    args = build_parser().parse_args(["download", "--target-dir", str(target)])
+
+    def unexpected_client(*args, **kwargs):
+        raise AssertionError("network client must not be created")
+
+    monkeypatch.setattr("deep_alpha.main.GitHubReleaseClient", unexpected_client)
+    with pytest.raises(ProviderError, match="deep-alpha update"):
+        download_release(args)

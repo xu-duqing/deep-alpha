@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import calendar as calendar_module
 import logging
 import shutil
 import sys
 import tempfile
+from datetime import date
 from pathlib import Path
 
 from deep_alpha import __version__
@@ -13,7 +15,18 @@ from deep_alpha.errors import ArgumentError, DeepAlphaError, ProviderError
 from deep_alpha.github_release import GitHubReleaseClient
 from deep_alpha.installer import install_archive, read_metadata, validate_provider
 from deep_alpha.output import emit, render_frame
-from deep_alpha.services import KlineQuery, MarketDataService, parse_fields, read_calendar, read_fields, read_symbols, validate_date
+from deep_alpha.progress import DownloadProgress
+from deep_alpha.services import KlineQuery, MarketDataService, parse_fields, read_calendar, read_fields, read_symbols, read_universes, validate_date
+
+LOGGER = logging.getLogger("deep_alpha")
+
+
+def default_start_date(today: date | None = None) -> str:
+    current = today or date.today()
+    year = current.year if current.month > 1 else current.year - 1
+    month = current.month - 1 if current.month > 1 else 12
+    day = min(current.day, calendar_module.monthrange(year, month)[1])
+    return date(year, month, day).isoformat()
 
 
 def positive_int(value: str) -> int:
@@ -60,10 +73,14 @@ def build_parser() -> argparse.ArgumentParser:
     kline = subparsers.add_parser("kline", help="Query historical K-line data")
     add_location(kline)
     kline.add_argument("--symbol", required=True)
-    kline.add_argument("--start")
+    kline.add_argument(
+        "--start",
+        default=default_start_date(),
+        help="Start date (YYYY-MM-DD; default: one month ago)",
+    )
     kline.add_argument("--end")
     kline.add_argument("--fields", default=",".join(DEFAULT_FIELDS))
-    kline.add_argument("--format", choices=["csv", "json", "table"], default="csv")
+    kline.add_argument("--format", choices=["csv", "json", "table"], default="json")
     kline.add_argument("--output")
     kline.add_argument("--adjust", choices=["none", "qfq", "hfq"], default="none")
 
@@ -85,16 +102,27 @@ def command_target(args: argparse.Namespace) -> Path:
 
 def download_release(args: argparse.Namespace, asset=None) -> str:
     target = command_target(args)
+    if target.exists() and not args.force:
+        raise ProviderError(
+            f"Target directory already exists: {target}. "
+            "Run 'deep-alpha update' to update it, or use --force to replace it."
+        )
     client = GitHubReleaseClient(args.repo, args.timeout)
+    LOGGER.info("Fetching release metadata from %s", args.repo)
     asset = asset or client.get_asset(args.tag, args.asset)
+    LOGGER.info("Release %s: %s (%s bytes)", asset.release_tag, asset.name, asset.size)
     archive_dir = Path(tempfile.mkdtemp(prefix="deep-alpha-"))
     archive = archive_dir / asset.name
     try:
-        client.download(asset, archive)
+        LOGGER.info("Downloading asset")
+        progress = DownloadProgress(asset.size)
+        client.download(asset, archive, progress.update)
+        LOGGER.info("Validating and installing data into %s", target)
         install_archive(archive, target, args.repo, asset, args.force)
         if args.keep_archive:
             kept = target.parent / f"{asset.release_tag}-{asset.name}"
             shutil.copy2(archive, kept)
+            LOGGER.info("Saved archive to %s", kept)
     finally:
         shutil.rmtree(archive_dir, ignore_errors=True)
     return f"Installed {asset.release_tag} to {target}"
@@ -120,6 +148,7 @@ def run(args: argparse.Namespace) -> str | None:
         metadata = read_metadata(provider, required=False)
         calendars = read_calendar(provider)
         symbols = read_symbols(provider)
+        universes = read_universes(provider)
         values = {
             "provider_uri": provider,
             "release_tag": metadata.get("release_tag", "unknown"),
@@ -130,7 +159,18 @@ def run(args: argparse.Namespace) -> str | None:
             "instrument_count": len(symbols),
             "fields": ", ".join(read_fields(provider)),
         }
-        return "\n".join(f"{key}: {value}" for key, value in values.items())
+        lines = [f"{key}: {value}" for key, value in values.items()]
+        lines.append("datasets:")
+        for universe in universes:
+            period = (
+                f"{universe.start} to {universe.end}"
+                if universe.start and universe.end
+                else f"{calendars[0]} to {calendars[-1]}"
+            )
+            lines.append(
+                f"  {universe.name}: {universe.instrument_count} instruments, {period}"
+            )
+        return "\n".join(lines)
     if args.command == "symbols":
         symbols = read_symbols(provider)
         if args.prefix:
@@ -145,11 +185,11 @@ def run(args: argparse.Namespace) -> str | None:
         dates = [item for item in read_calendar(provider) if (not start or item >= start) and (not end or item <= end)]
         return "\n".join(dates)
     if args.command == "kline":
-        if args.adjust != "none":
-            raise ArgumentError("Only --adjust none is currently supported")
         fields = parse_fields(args.fields)
         service = MarketDataService(provider, args.region)
-        frame = service.get_kline(KlineQuery(args.symbol, args.start, args.end, fields))
+        frame = service.get_kline(
+            KlineQuery(args.symbol, args.start, args.end, fields, adjust=args.adjust)
+        )
         emit(render_frame(frame, args.format), args.output)
         return None
     raise ArgumentError(f"Unknown command: {args.command}")
@@ -158,7 +198,10 @@ def run(args: argparse.Namespace) -> str | None:
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
-    logging.basicConfig(level=logging.DEBUG if args.verbose else logging.WARNING)
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(levelname)s: %(message)s",
+    )
     try:
         message = run(args)
         if message:

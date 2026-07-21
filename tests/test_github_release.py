@@ -26,5 +26,11 @@ def test_stream_download(monkeypatch, tmp_path):
     monkeypatch.setattr(client, "_request", lambda url: Response(b"abc"))
     from deep_alpha.github_release import ReleaseAsset
     destination = tmp_path / "data.tar.gz"
-    client.download(ReleaseAsset("tag", "data", 3, "https://example.test/data"), destination)
+    updates = []
+    client.download(
+        ReleaseAsset("tag", "data", 3, "https://example.test/data"),
+        destination,
+        updates.append,
+    )
     assert destination.read_bytes() == b"abc"
+    assert updates == [3]

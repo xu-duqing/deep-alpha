@@ -27,6 +27,19 @@ deep-alpha kline --symbol 600519.SH --start 2024-01-01 --end 2024-01-10
 deep-alpha kline --symbol 600519 --start 2024-01-01 --end 2024-01-10
 ```
 
+K-line queries output JSON by default. Use `--format csv` or `--format table`
+when another representation is preferred. If `--start` is omitted, it defaults
+to one calendar month before today.
+
+Prices and volume are returned in original, unadjusted form by default
+(`--adjust none`). Use `--adjust qfq` for forward-adjusted data anchored to the
+latest local factor, or `--adjust hfq` for backward-adjusted data anchored to
+the earliest local factor. `volume` and `amount` remain original in every mode.
+
+`deep-alpha info` reports installed instrument universes, instrument counts,
+available fields, and each universe's data date range. Downloads emit lifecycle
+logs and a byte/percentage progress bar to stderr.
+
 ## Documentation
 
 - [Offline data CLI technical design](docs/offline_data_cli_design.md)

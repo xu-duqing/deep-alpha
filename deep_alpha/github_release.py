@@ -7,6 +7,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -84,13 +85,20 @@ class GitHubReleaseClient:
             raise DownloadError("Invalid GitHub asset metadata") from exc
         return ReleaseAsset(release_tag, asset_name, size, url)
 
-    def download(self, asset: ReleaseAsset, destination: Path) -> None:
+    def download(
+        self,
+        asset: ReleaseAsset,
+        destination: Path,
+        progress: Callable[[int], None] | None = None,
+    ) -> None:
         written = 0
         try:
             with self._request(asset.download_url) as response, destination.open("wb") as output:
                 while chunk := response.read(1024 * 1024):
                     output.write(chunk)
                     written += len(chunk)
+                    if progress is not None:
+                        progress(written)
         except DownloadError:
             destination.unlink(missing_ok=True)
             raise
