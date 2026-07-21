@@ -8,6 +8,10 @@ dependencies = [
     "pandas",
 ]
 
+[project.optional-dependencies]
+qlib = ["pyqlib"]
+test = ["pytest>=7"]
+
 [project.scripts]
 deep-alpha = "deep_alpha.main:main"
 

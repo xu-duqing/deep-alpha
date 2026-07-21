@@ -8,7 +8,7 @@ The first dataset target is China A-share daily bars published by `xu-duqing/inv
 ~/.qlib/qlib_data/cn_data
 ```
 
-## Planned capabilities
+## Capabilities
 
 - Download offline Qlib data from `https://github.com/xu-duqing/investment_data/releases`.
 - Update local data when the latest Release points to a newer trading day.
@@ -32,6 +32,14 @@ deep-alpha kline --symbol 600519 --start 2024-01-01 --end 2024-01-10
 - [Offline data CLI technical design](docs/offline_data_cli_design.md)
 - [Docs index](docs/README.md)
 
-## Status
+## Installation
 
-Initial project scaffold. Implementation will follow the technical design in `docs/`.
+```bash
+python -m pip install -e .
+# Query commands additionally require Microsoft Qlib:
+python -m pip install -e '.[qlib]'
+```
+
+Run `deep-alpha --help` for all options. `DEEP_ALPHA_PROVIDER_URI` can override
+the default provider directory. GitHub authentication is optional via
+`GITHUB_TOKEN` or `GH_TOKEN`.
