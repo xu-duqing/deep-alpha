@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+
+# Local env / OS
+.env
+.DS_Store
+
+# Build outputs
+build/
+dist/
+
+# Local data / runtime state
+.qlib_release_state/
+logs/
+output/
