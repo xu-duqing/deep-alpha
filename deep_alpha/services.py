@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from .config import FIELD_MAP
+from .config import DAILY_BASIC_FIELDS, FIELD_MAP
 from .errors import ArgumentError, ProviderError, QueryError
 from .qlib_client import QlibClient
 from .symbols import normalize_symbol
@@ -116,6 +116,18 @@ def parse_fields(value: str) -> list[str]:
         if field not in result:
             result.append(field)
     return result
+
+
+def parse_indicator_fields(value: str) -> list[str]:
+    fields = parse_fields(value)
+    unsupported = [field for field in fields if field not in DAILY_BASIC_FIELDS]
+    if unsupported:
+        available = ", ".join(DAILY_BASIC_FIELDS)
+        raise ArgumentError(
+            f"Unsupported indicator field: {unsupported[0]}. "
+            f"Available indicator fields: {available}"
+        )
+    return fields
 
 
 class MarketDataService:

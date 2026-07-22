@@ -2,7 +2,13 @@ import pandas as pd
 import pytest
 
 from deep_alpha.errors import ArgumentError, QueryError
-from deep_alpha.services import KlineQuery, MarketDataService, parse_fields, validate_date
+from deep_alpha.services import (
+    KlineQuery,
+    MarketDataService,
+    parse_fields,
+    parse_indicator_fields,
+    validate_date,
+)
 from deep_alpha.symbols import normalize_symbol
 
 SYMBOLS = ["SH600519", "SZ000001", "BJ000001"]
@@ -25,11 +31,22 @@ def test_unknown_symbol():
 
 def test_fields_and_dates():
     assert parse_fields("open, close,open") == ["open", "close"]
+    assert parse_fields("pe, turnover_rate,limit_status") == [
+        "pe",
+        "turnover_rate",
+        "limit_status",
+    ]
     assert validate_date("2024-02-29") == "2024-02-29"
     with pytest.raises(ArgumentError):
         parse_fields("open,turnover")
     with pytest.raises(ArgumentError):
         validate_date("2024-02-30")
+
+
+def test_indicator_fields_only_accept_daily_basic_fields():
+    assert parse_indicator_fields("turnover_rate, pe") == ["turnover_rate", "pe"]
+    with pytest.raises(ArgumentError, match="Unsupported indicator field: close"):
+        parse_indicator_fields("turnover_rate,close")
 
 
 class FakeClient:

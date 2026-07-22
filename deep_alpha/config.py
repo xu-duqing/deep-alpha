@@ -7,10 +7,30 @@ from pathlib import Path
 
 DEFAULT_REPO = "xu-duqing/investment_data"
 DEFAULT_ASSET = "qlib_bin.tar.gz"
+DAILY_BASIC_ASSET = "daily_basic_qlib_features.tar.gz"
 DEFAULT_PROVIDER_URI = Path("~/.qlib/qlib_data/cn_data")
 DEFAULT_FIELDS = ("open", "high", "low", "close", "volume", "amount", "vwap")
-FIELD_MAP = {name: f"${name}" for name in DEFAULT_FIELDS}
+DAILY_BASIC_FIELDS = (
+    "turnover_rate",
+    "turnover_rate_f",
+    "volume_ratio",
+    "pe",
+    "pe_ttm",
+    "pb",
+    "ps",
+    "ps_ttm",
+    "dv_ratio",
+    "dv_ttm",
+    "total_share",
+    "float_share",
+    "free_share",
+    "total_mv",
+    "circ_mv",
+    "limit_status",
+)
+FIELD_MAP = {name: f"${name}" for name in (*DEFAULT_FIELDS, *DAILY_BASIC_FIELDS)}
 META_FILENAME = ".investment_data_meta.json"
+DAILY_BASIC_META_FILENAME = ".daily_basic_meta.json"
 
 
 @dataclass(frozen=True)

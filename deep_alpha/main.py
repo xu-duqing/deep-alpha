@@ -10,13 +10,34 @@ from datetime import date
 from pathlib import Path
 
 from deep_alpha import __version__
-from deep_alpha.config import DEFAULT_ASSET, DEFAULT_FIELDS, DEFAULT_REPO, provider_uri
+from deep_alpha.config import (
+    DAILY_BASIC_ASSET,
+    DAILY_BASIC_FIELDS,
+    DEFAULT_ASSET,
+    DEFAULT_FIELDS,
+    DEFAULT_REPO,
+    provider_uri,
+)
 from deep_alpha.errors import ArgumentError, DeepAlphaError, ProviderError
+from deep_alpha.feature_increment import (
+    install_feature_archive,
+    read_feature_metadata,
+)
 from deep_alpha.github_release import GitHubReleaseClient
 from deep_alpha.installer import install_archive, read_metadata, validate_provider
 from deep_alpha.output import emit, render_frame
 from deep_alpha.progress import DownloadProgress
-from deep_alpha.services import KlineQuery, MarketDataService, parse_fields, read_calendar, read_fields, read_symbols, read_universes, validate_date
+from deep_alpha.services import (
+    KlineQuery,
+    MarketDataService,
+    parse_fields,
+    parse_indicator_fields,
+    read_calendar,
+    read_fields,
+    read_symbols,
+    read_universes,
+    validate_date,
+)
 
 LOGGER = logging.getLogger("deep_alpha")
 
@@ -44,7 +65,13 @@ def add_location(parser: argparse.ArgumentParser) -> None:
 def add_release_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--repo", default=DEFAULT_REPO)
     parser.add_argument("--tag")
-    parser.add_argument("--asset", default=DEFAULT_ASSET)
+    parser.add_argument(
+        "--dataset",
+        choices=["market", "daily-basic"],
+        default="market",
+        help="Dataset to download or update",
+    )
+    parser.add_argument("--asset", help="Override the selected dataset's Release asset")
     parser.add_argument("--target-dir")
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--keep-archive", action="store_true")
@@ -84,6 +111,30 @@ def build_parser() -> argparse.ArgumentParser:
     kline.add_argument("--output")
     kline.add_argument("--adjust", choices=["none", "qfq", "hfq"], default="none")
 
+    indicator = subparsers.add_parser(
+        "indicator", help="Query historical daily indicators"
+    )
+    add_location(indicator)
+    indicator.add_argument("--symbol", required=True)
+    indicator.add_argument(
+        "--start",
+        default=default_start_date(),
+        help="Start date (YYYY-MM-DD; default: one month ago)",
+    )
+    indicator.add_argument("--end")
+    indicator.add_argument(
+        "--fields",
+        default=",".join(DAILY_BASIC_FIELDS),
+        help=(
+            "Comma-separated indicator fields (default: all). Available: "
+            + ", ".join(DAILY_BASIC_FIELDS)
+        ),
+    )
+    indicator.add_argument(
+        "--format", choices=["csv", "json", "table"], default="json"
+    )
+    indicator.add_argument("--output")
+
     symbols = subparsers.add_parser("symbols", help="List or search local symbols")
     add_location(symbols)
     symbols.add_argument("--prefix")
@@ -100,16 +151,33 @@ def command_target(args: argparse.Namespace) -> Path:
     return provider_uri(args.target_dir or args.provider_uri)
 
 
+def selected_asset(args: argparse.Namespace) -> str:
+    return args.asset or (
+        DAILY_BASIC_ASSET if args.dataset == "daily-basic" else DEFAULT_ASSET
+    )
+
+
 def download_release(args: argparse.Namespace, asset=None) -> str:
     target = command_target(args)
-    if target.exists() and not args.force:
+    is_daily_basic = args.dataset == "daily-basic"
+    installed = {}
+    if is_daily_basic:
+        validate_provider(target)
+        installed = read_feature_metadata(target, required=False)
+        if installed and not args.force:
+            raise ProviderError(
+                "Daily-basic data is already installed. "
+                "Run 'deep-alpha update --dataset daily-basic' to update it."
+            )
+    elif target.exists() and not args.force:
         raise ProviderError(
             f"Target directory already exists: {target}. "
             "Run 'deep-alpha update' to update it, or use --force to replace it."
         )
     client = GitHubReleaseClient(args.repo, args.timeout)
     LOGGER.info("Fetching release metadata from %s", args.repo)
-    asset = asset or client.get_asset(args.tag, args.asset)
+    asset_name = selected_asset(args)
+    asset = asset or client.get_asset(args.tag, asset_name)
     LOGGER.info("Release %s: %s (%s bytes)", asset.release_tag, asset.name, asset.size)
     archive_dir = Path(tempfile.mkdtemp(prefix="deep-alpha-"))
     archive = archive_dir / asset.name
@@ -118,14 +186,24 @@ def download_release(args: argparse.Namespace, asset=None) -> str:
         progress = DownloadProgress(asset.size)
         client.download(asset, archive, progress.update)
         LOGGER.info("Validating and installing data into %s", target)
-        install_archive(archive, target, args.repo, asset, args.force)
+        if is_daily_basic:
+            install_feature_archive(
+                archive,
+                target,
+                args.repo,
+                asset,
+                replace=bool(installed),
+            )
+        else:
+            install_archive(archive, target, args.repo, asset, args.force)
         if args.keep_archive:
             kept = target.parent / f"{asset.release_tag}-{asset.name}"
             shutil.copy2(archive, kept)
             LOGGER.info("Saved archive to %s", kept)
     finally:
         shutil.rmtree(archive_dir, ignore_errors=True)
-    return f"Installed {asset.release_tag} to {target}"
+    dataset = "daily-basic data" if is_daily_basic else "market data"
+    return f"Installed {dataset} {asset.release_tag} to {target}"
 
 
 def run(args: argparse.Namespace) -> str | None:
@@ -134,33 +212,83 @@ def run(args: argparse.Namespace) -> str | None:
     if args.command == "update":
         target = command_target(args)
         client = GitHubReleaseClient(args.repo, args.timeout)
-        asset = client.get_asset(args.tag, args.asset)
-        if target.exists() and not args.force:
-            meta = read_metadata(target)
-            if meta.get("repo") == args.repo and meta.get("asset_name") == args.asset and meta.get("release_tag") == asset.release_tag:
+        asset_name = selected_asset(args)
+        asset = client.get_asset(args.tag, asset_name)
+        meta = {}
+        if target.exists():
+            meta = (
+                read_feature_metadata(target, required=False)
+                if args.dataset == "daily-basic"
+                else read_metadata(target)
+            )
+        if meta and not args.force:
+            if meta.get("repo") == args.repo and meta.get("asset_name") == asset_name and meta.get("release_tag") == asset.release_tag:
                 return f"Already up to date: {asset.release_tag}"
-        args.force = target.exists() or args.force
+        args.force = (
+            bool(meta) or args.force
+            if args.dataset == "daily-basic"
+            else target.exists() or args.force
+        )
         return download_release(args, asset)
 
     provider = provider_uri(args.provider_uri)
     validate_provider(provider)
     if args.command == "info":
         metadata = read_metadata(provider, required=False)
+        daily_basic_metadata = read_feature_metadata(provider, required=False)
         calendars = read_calendar(provider)
         symbols = read_symbols(provider)
         universes = read_universes(provider)
-        values = {
-            "provider_uri": provider,
-            "release_tag": metadata.get("release_tag", "unknown"),
-            "asset_name": metadata.get("asset_name", "unknown"),
-            "installed_at": metadata.get("installed_at", "unknown"),
-            "calendar_start": calendars[0],
-            "calendar_end": calendars[-1],
-            "instrument_count": len(symbols),
-            "fields": ", ".join(read_fields(provider)),
-        }
-        lines = [f"{key}: {value}" for key, value in values.items()]
-        lines.append("datasets:")
+        fields = read_fields(provider)
+        market_fields = [field for field in DEFAULT_FIELDS if field in fields]
+        daily_basic_fields = [
+            field for field in fields if field not in DEFAULT_FIELDS
+        ]
+        lines = [
+            f"provider_uri: {provider}",
+            f"calendar_start: {calendars[0]}",
+            f"calendar_end: {calendars[-1]}",
+            f"instrument_count: {len(symbols)}",
+            f"fields: {', '.join(fields)}",
+            "data_sources:",
+            "  market:",
+            f"    dataset: {metadata.get('dataset', 'cn_stock_1d')}",
+            "    status: "
+            + ("installed" if metadata else "installed (metadata unavailable)"),
+            f"    release_tag: {metadata.get('release_tag', 'unknown')}",
+            f"    asset_name: {metadata.get('asset_name', 'unknown')}",
+            f"    installed_at: {metadata.get('installed_at', 'unknown')}",
+            f"    date_range: {calendars[0]} to {calendars[-1]}",
+            f"    instrument_count: {len(symbols)}",
+            f"    fields: {', '.join(market_fields)}",
+        ]
+        if daily_basic_metadata:
+            source_start = daily_basic_metadata.get("source_min_date", "unknown")
+            source_end = daily_basic_metadata.get("source_max_date", "unknown")
+            lines.extend(
+                [
+                    "  daily-basic:",
+                    f"    dataset: {daily_basic_metadata.get('dataset', 'daily_basic')}",
+                    "    status: installed",
+                    f"    release_tag: {daily_basic_metadata.get('release_tag', 'unknown')}",
+                    f"    asset_name: {daily_basic_metadata.get('asset_name', 'unknown')}",
+                    f"    installed_at: {daily_basic_metadata.get('installed_at', 'unknown')}",
+                    f"    date_range: {source_start} to {source_end}",
+                    "    instrument_count: "
+                    f"{daily_basic_metadata.get('instrument_count', 'unknown')}",
+                    f"    fields: {', '.join(daily_basic_fields)}",
+                ]
+            )
+        else:
+            lines.extend(
+                [
+                    "  daily-basic:",
+                    "    dataset: daily_basic",
+                    "    status: not installed",
+                    "    fields: ",
+                ]
+            )
+        lines.append("universes:")
         for universe in universes:
             period = (
                 f"{universe.start} to {universe.end}"
@@ -189,6 +317,14 @@ def run(args: argparse.Namespace) -> str | None:
         service = MarketDataService(provider, args.region)
         frame = service.get_kline(
             KlineQuery(args.symbol, args.start, args.end, fields, adjust=args.adjust)
+        )
+        emit(render_frame(frame, args.format), args.output)
+        return None
+    if args.command == "indicator":
+        fields = parse_indicator_fields(args.fields)
+        service = MarketDataService(provider, args.region)
+        frame = service.get_kline(
+            KlineQuery(args.symbol, args.start, args.end, fields)
         )
         emit(render_frame(frame, args.format), args.output)
         return None
