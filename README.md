@@ -243,6 +243,14 @@ python -m pytest
 - [文档索引](docs/README.md)
 - [离线数据 CLI 技术设计](docs/offline_data_cli_design.md)
 
+## 截图
+<img width="542" height="439" alt="image" src="https://github.com/user-attachments/assets/d7463ebc-3611-429a-a51c-824b23baa5c0" />
+
+<img width="592" height="87" alt="image" src="https://github.com/user-attachments/assets/118560ef-0966-416a-a3dd-bf5fab527f9f" />
+
+
+
+
 ## 数据与使用边界
 
 本项目负责数据包的下载、安装、更新与本地读取，不对上游数据的完整性、及时性或特定用途适用性作保证。数据版权、授权及再分发条件由数据源和相关权利人决定，请在使用前自行确认。
