@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from deep_alpha.feature_increment import install_feature_archive, read_feature_metadata
+from deep_alpha.errors import ProviderError
 from deep_alpha.github_release import ReleaseAsset
 
 
@@ -108,5 +109,5 @@ def test_calendar_mismatch_is_rejected(tmp_path):
     make_archive(archive, provider)
     (provider / "calendars/day.txt").write_text("2024-01-02\n")
 
-    with pytest.raises(ValueError, match="calendar mismatch"):
+    with pytest.raises(ProviderError, match="calendar mismatch"):
         install_feature_archive(archive, provider, "owner/repo", asset(archive))

@@ -178,3 +178,103 @@ def test_daily_basic_download_uses_feature_asset_and_installer(tmp_path, monkeyp
         ("install", provider, False),
     ]
     assert result == f"Installed daily-basic data 2026-07-22 to {provider}"
+
+
+def test_daily_basic_download_uses_installed_market_release(tmp_path, monkeypatch):
+    provider = tmp_path / "provider"
+    make_provider(provider)
+    (provider / ".investment_data_meta.json").write_text(
+        '{"schema_version": 1, "dataset": "cn_stock_1d", '
+        '"repo": "owner/repo", "release_tag": "2026-07-28", '
+        '"asset_name": "qlib_bin.tar.gz"}'
+    )
+    args = build_parser().parse_args(
+        [
+            "download",
+            "--dataset",
+            "daily-basic",
+            "--repo",
+            "owner/repo",
+            "--target-dir",
+            str(provider),
+        ]
+    )
+    calls = []
+
+    class Asset:
+        release_tag = "2026-07-28"
+        name = "daily_basic_qlib_features.tar.gz"
+        size = 3
+
+    class Client:
+        def __init__(self, repo, timeout):
+            pass
+
+        def get_asset(self, tag, name):
+            calls.append(("asset", tag, name))
+            return Asset()
+
+        def download(self, asset, destination, progress):
+            destination.write_bytes(b"abc")
+
+    monkeypatch.setattr("deep_alpha.main.GitHubReleaseClient", Client)
+    monkeypatch.setattr(
+        "deep_alpha.main.install_feature_archive",
+        lambda archive, target, repo, asset, replace: calls.append(
+            ("install", target, replace)
+        ),
+    )
+
+    result = download_release(args)
+
+    assert calls == [
+        ("asset", "2026-07-28", "daily_basic_qlib_features.tar.gz"),
+        ("install", provider, False),
+    ]
+    assert result == f"Installed daily-basic data 2026-07-28 to {provider}"
+
+
+def test_daily_basic_update_checks_compatible_release_before_latest(
+    tmp_path, monkeypatch
+):
+    provider = tmp_path / "provider"
+    make_provider(provider)
+    (provider / ".investment_data_meta.json").write_text(
+        '{"schema_version": 1, "dataset": "cn_stock_1d", '
+        '"repo": "owner/repo", "release_tag": "2026-07-28", '
+        '"asset_name": "qlib_bin.tar.gz"}'
+    )
+    calls = []
+
+    class Asset:
+        release_tag = "2026-07-28"
+        name = "daily_basic_qlib_features.tar.gz"
+        size = 3
+
+    class Client:
+        def __init__(self, repo, timeout):
+            pass
+
+        def get_asset(self, tag, name):
+            calls.append((tag, name))
+            return Asset()
+
+    monkeypatch.setattr("deep_alpha.main.GitHubReleaseClient", Client)
+    monkeypatch.setattr(
+        "deep_alpha.main.download_release",
+        lambda args, asset: f"selected {asset.release_tag}",
+    )
+    args = build_parser().parse_args(
+        [
+            "update",
+            "--dataset",
+            "daily-basic",
+            "--repo",
+            "owner/repo",
+            "--target-dir",
+            str(provider),
+        ]
+    )
+
+    assert run(args) == "selected 2026-07-28"
+    assert calls == [("2026-07-28", "daily_basic_qlib_features.tar.gz")]

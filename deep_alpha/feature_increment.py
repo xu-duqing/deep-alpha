@@ -205,7 +205,13 @@ def _validate_calendar(manifest: dict[str, Any], provider: Path) -> int:
     )
     actual = (_sha256(path), values[0], values[-1], len(values))
     if expected != actual:
-        raise ValueError(f"Base calendar mismatch: expected={expected}, actual={actual}")
+        raise ProviderError(
+            "Base calendar mismatch: "
+            f"package expects {expected[1]} to {expected[2]} ({expected[3]} days), "
+            f"but the installed market data has {actual[1]} to {actual[2]} "
+            f"({actual[3]} days). Update market data first with 'deep-alpha update', "
+            "then retry the daily-basic installation."
+        )
     return len(values)
 
 

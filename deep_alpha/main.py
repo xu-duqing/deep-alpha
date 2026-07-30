@@ -157,6 +157,14 @@ def selected_asset(args: argparse.Namespace) -> str:
     )
 
 
+def select_daily_basic_tag(args: argparse.Namespace, target: Path) -> None:
+    if args.dataset != "daily-basic" or args.tag is not None:
+        return
+    market = read_metadata(target, required=False)
+    if market.get("repo") == args.repo and market.get("release_tag"):
+        args.tag = market["release_tag"]
+
+
 def download_release(args: argparse.Namespace, asset=None) -> str:
     target = command_target(args)
     is_daily_basic = args.dataset == "daily-basic"
@@ -169,6 +177,7 @@ def download_release(args: argparse.Namespace, asset=None) -> str:
                 "Daily-basic data is already installed. "
                 "Run 'deep-alpha update --dataset daily-basic' to update it."
             )
+        select_daily_basic_tag(args, target)
     elif target.exists() and not args.force:
         raise ProviderError(
             f"Target directory already exists: {target}. "
@@ -211,6 +220,8 @@ def run(args: argparse.Namespace) -> str | None:
         return download_release(args)
     if args.command == "update":
         target = command_target(args)
+        if target.exists():
+            select_daily_basic_tag(args, target)
         client = GitHubReleaseClient(args.repo, args.timeout)
         asset_name = selected_asset(args)
         asset = client.get_asset(args.tag, asset_name)
