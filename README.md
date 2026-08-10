@@ -214,7 +214,7 @@ deep-alpha info
 | `--provider-uri` | 为当前命令指定 provider 目录 |
 | `--verbose` | 输出详细日志 |
 
-公开 Release 无需 GitHub 登录。下载进度和生命周期日志写入标准错误流，JSON/CSV 等查询结果仍可安全通过管道处理。
+公开 Release 无需 GitHub 登录。Release 数据包通过 `ghfast.top` 代理下载；GitHub Release 元数据仍直接从 GitHub API 获取。下载进度和生命周期日志写入标准错误流，JSON/CSV 等查询结果仍可安全通过管道处理。
 
 ## 适合谁
 

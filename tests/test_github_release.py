@@ -23,7 +23,13 @@ def test_get_latest_asset(monkeypatch):
 
 def test_stream_download(monkeypatch, tmp_path):
     client = GitHubReleaseClient("owner/repo")
-    monkeypatch.setattr(client, "_request", lambda url: Response(b"abc"))
+    requested_urls = []
+
+    def request(url):
+        requested_urls.append(url)
+        return Response(b"abc")
+
+    monkeypatch.setattr(client, "_request", request)
     from deep_alpha.github_release import ReleaseAsset
     destination = tmp_path / "data.tar.gz"
     updates = []
@@ -34,3 +40,4 @@ def test_stream_download(monkeypatch, tmp_path):
     )
     assert destination.read_bytes() == b"abc"
     assert updates == [3]
+    assert requested_urls == ["https://ghfast.top/https://example.test/data"]
