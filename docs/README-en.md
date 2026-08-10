@@ -29,7 +29,7 @@ The datasets are published through GitHub Releases in [`xu-duqing/investment_dat
 
 - Python 3.10 or newer
 - Microsoft Qlib is required for K-line and indicator queries; install the `qlib` optional dependency
-- Public Releases can be downloaded without authentication; `GITHUB_TOKEN` or `GH_TOKEN` may be used for restricted resources or a higher API rate limit
+- Public Releases can be downloaded without authentication; Release assets are downloaded through the `ghfast.top` proxy, while metadata still comes directly from the GitHub API. `GITHUB_TOKEN` or `GH_TOKEN` may be used for restricted resources or a higher API rate limit
 
 ## Installation
 
@@ -214,7 +214,7 @@ deep-alpha indicator --help
 | `--provider-uri` | Set the provider directory for the current command |
 | `--verbose` | Enable detailed logs |
 
-Downloads emit lifecycle logs and byte/percentage progress information to stderr.
+Release assets are downloaded through the `ghfast.top` proxy. Downloads emit lifecycle logs and byte/percentage progress information to stderr.
 
 ## Development and testing
 

@@ -14,6 +14,7 @@ from pathlib import Path
 from .errors import DownloadError
 
 RETRYABLE = {408, 409, 425, 429, 500, 502, 503, 504}
+DOWNLOAD_PROXY = "https://ghfast.top/"
 
 
 @dataclass(frozen=True)
@@ -92,8 +93,9 @@ class GitHubReleaseClient:
         progress: Callable[[int], None] | None = None,
     ) -> None:
         written = 0
+        download_url = f"{DOWNLOAD_PROXY}{asset.download_url}"
         try:
-            with self._request(asset.download_url) as response, destination.open("wb") as output:
+            with self._request(download_url) as response, destination.open("wb") as output:
                 while chunk := response.read(1024 * 1024):
                     output.write(chunk)
                     written += len(chunk)
