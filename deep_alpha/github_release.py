@@ -15,6 +15,8 @@ from .errors import DownloadError
 
 RETRYABLE = {408, 409, 425, 429, 500, 502, 503, 504}
 DOWNLOAD_PROXY = "https://ghfast.top/"
+CHUNK_SIZE = 8 * 1024 * 1024
+CHUNK_ATTEMPTS = 5
 
 
 @dataclass(frozen=True)
@@ -33,19 +35,21 @@ class GitHubReleaseClient:
         self.timeout = timeout
         self.retries = retries
 
-    def _headers(self) -> dict[str, str]:
+    def _headers(self, authenticated: bool = True, range_start: int | None = None) -> dict[str, str]:
         headers = {"Accept": "application/vnd.github+json", "User-Agent": "deep-alpha"}
         token = os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN")
-        if token:
+        if token and authenticated:
             headers["Authorization"] = f"Bearer {token}"
+        if range_start is not None:
+            headers["Range"] = f"bytes={range_start}-"
         return headers
 
-    def _request(self, url: str):
+    def _request(self, url: str, authenticated: bool = True, range_start: int | None = None):
         last_error: Exception | None = None
         for attempt in range(self.retries):
             try:
                 return urllib.request.urlopen(
-                    urllib.request.Request(url, headers=self._headers()), timeout=self.timeout
+                    urllib.request.Request(url, headers=self._headers(authenticated, range_start)), timeout=self.timeout
                 )
             except urllib.error.HTTPError as exc:
                 last_error = exc
@@ -95,12 +99,14 @@ class GitHubReleaseClient:
         written = 0
         download_url = f"{DOWNLOAD_PROXY}{asset.download_url}"
         try:
-            with self._request(download_url) as response, destination.open("wb") as output:
-                while chunk := response.read(1024 * 1024):
-                    output.write(chunk)
-                    written += len(chunk)
-                    if progress is not None:
-                        progress(written)
+            with destination.open("wb") as output:
+                # Download in ranges and resume mid-chunk on truncation: the
+                # proxy often drops long-lived connections on large assets.
+                while asset.size < 0 or written < asset.size:
+                    end = written + CHUNK_SIZE - 1
+                    if asset.size >= 0:
+                        end = min(end, asset.size - 1)
+                    written = self._download_range(download_url, written, end, output, progress)
         except DownloadError:
             destination.unlink(missing_ok=True)
             raise
@@ -110,3 +116,39 @@ class GitHubReleaseClient:
         if written == 0 or (asset.size >= 0 and written != asset.size):
             destination.unlink(missing_ok=True)
             raise DownloadError(f"Downloaded asset size mismatch: expected {asset.size}, got {written}")
+
+    def _download_range(
+        self,
+        url: str,
+        start: int,
+        end: int,
+        output,
+        progress: Callable[[int], None] | None,
+    ) -> int:
+        """Stream bytes [start, end] into output, resuming on short reads.
+
+        Returns the new file offset (end + 1 on success)."""
+        written = start
+        for _ in range(CHUNK_ATTEMPTS):
+            if written > end:
+                break
+            try:
+                # The proxy is a third party: never forward the user's GitHub token.
+                with self._request(url, authenticated=False, range_start=written) as response:
+                    while written <= end:
+                        chunk = response.read(min(1024 * 1024, end - written + 1))
+                        if not chunk:
+                            break  # truncated; resume from current offset
+                        output.write(chunk)
+                        written += len(chunk)
+                        if progress is not None:
+                            progress(written)
+            except DownloadError:
+                raise
+            except (OSError, TimeoutError):
+                continue  # connection dropped mid-chunk; resume from current offset
+        if written <= end:
+            raise DownloadError(
+                f"Download stalled at {written} of {end + 1} bytes after {CHUNK_ATTEMPTS} attempts"
+            )
+        return written
