@@ -278,3 +278,36 @@ def test_daily_basic_update_checks_compatible_release_before_latest(
 
     assert run(args) == "selected 2026-07-28"
     assert calls == [("2026-07-28", "daily_basic_qlib_features.tar.gz")]
+
+
+def test_market_update_adopts_valid_provider_without_metadata(tmp_path, monkeypatch):
+    provider = tmp_path / "provider"
+    make_provider(provider)
+    calls = []
+
+    class Asset:
+        release_tag = "2026-07-28"
+        name = "qlib_bin.tar.gz"
+        size = 3
+
+    class Client:
+        def __init__(self, repo, timeout):
+            pass
+
+        def get_asset(self, tag, name):
+            calls.append(("asset", tag, name))
+            return Asset()
+
+    def fake_download(args, asset):
+        calls.append(("download", args.force, asset.release_tag))
+        return f"selected {asset.release_tag}"
+
+    monkeypatch.setattr("deep_alpha.main.GitHubReleaseClient", Client)
+    monkeypatch.setattr("deep_alpha.main.download_release", fake_download)
+    args = build_parser().parse_args(["update", "--target-dir", str(provider)])
+
+    assert run(args) == "selected 2026-07-28"
+    assert calls == [
+        ("asset", None, "qlib_bin.tar.gz"),
+        ("download", True, "2026-07-28"),
+    ]

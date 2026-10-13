@@ -221,6 +221,7 @@ def run(args: argparse.Namespace) -> str | None:
     if args.command == "update":
         target = command_target(args)
         if target.exists():
+            validate_provider(target)
             select_daily_basic_tag(args, target)
         client = GitHubReleaseClient(args.repo, args.timeout)
         asset_name = selected_asset(args)
@@ -230,7 +231,7 @@ def run(args: argparse.Namespace) -> str | None:
             meta = (
                 read_feature_metadata(target, required=False)
                 if args.dataset == "daily-basic"
-                else read_metadata(target)
+                else read_metadata(target, required=False)
             )
         if meta and not args.force:
             if meta.get("repo") == args.repo and meta.get("asset_name") == asset_name and meta.get("release_tag") == asset.release_tag:
