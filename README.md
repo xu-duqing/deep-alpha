@@ -112,10 +112,17 @@ deep-alpha indicator --symbol 000001.SZ \
 ## 更新不再靠猜
 
 ```bash
-# 更新基础行情
+# 默认将行情与 daily-basic 作为同一事务更新；优先使用两个 temporal delta
 deep-alpha update
 
-# 更新 daily-basic 指标
+# 强制使用同一 Release 的两个全量包
+deep-alpha update --full
+
+# 只允许 delta；不能应用时直接报错
+deep-alpha update --delta-only
+
+# 兼容旧脚本的单数据集行为
+deep-alpha update --dataset market
 deep-alpha update --dataset daily-basic
 
 # 查看本地数据实际更新到哪一个交易日
@@ -129,7 +136,15 @@ deep-alpha download --tag <release-tag>
 deep-alpha download --dataset daily-basic --tag <release-tag>
 ```
 
-基础行情采用完整 provider 安装；daily-basic 采用增量安装，只合并它负责的指标文件。daily-basic 更新时，即使使用 `--force`，也只替换上一次增量安装记录所属的文件，不会清空整个 provider。
+默认更新一次 Release API 响应解析四个资产（两个全量包和两个 temporal delta）。只有两份本地 metadata 都是 schema v2、`state=committed`、仓库/版本/`transaction_id` 相同，且记录的 calendar 条数和结束日期一致时，本地版本才被信任。下载前会根据该可信版本与 GitHub 上目标 Release 之前最近的完整快照判断 delta 是否连续；版本断档、legacy metadata、daily-basic 未安装或两份 metadata 不配对时，直接使用两个全量包。`--delta-only` 在可信条件不满足时立即报错。
+
+快速 delta 严格校验下载包自身的 checksums、双 manifest 配对关系和 API Release tag；客户端同时兼容 temporal-delta manifest schema v1（逐文件 payload）和 schema v2（共享 `payloads.bin` + `payload_offset`/`payload_size`）。v2 会验证切片非负、大小契约、互不重叠且不越界，TransactionPlan 用共享 payload 的 `memoryview`，不会为 139300 条 record 各复制 bytes；流式 tar loader 只保留 manifest/checksums、聚合 payload、calendar/instruments（v1 仍保留逐文件 payload），同时对完整 inventory 严格验签。对已有 Feature 热路径只检查文件存在与旧/新长度，不读取历史文件计算 SHA-256，也不复制历史 Feature。事务 journal 记录 append 前长度、新建路径、calendar 原长度、instruments 小型备份及旧 metadata；中断后通过 truncate/delete 恢复。该可信边界意味着外部手工改写历史 Feature 且文件长度不变不会被日常更新发现。更新输出包含 touched/append/create 数量以及 extract/check、preflight、journal、market/daily append、calendar/instruments、metadata commit 和 total 阶段耗时。
+
+可用 `python scripts/benchmark_temporal_delta.py --synthetic` 运行 schema v2 高压基准：默认生成 139300 records 与单个 95 MiB 聚合 payload，并以 loader 低于 5 秒为通过标准。基准只使用临时目录，不接触生产 Provider。
+
+成对全量回退先在 staging 解包 market，再合并 daily-basic 全量 Feature，最后整体替换 provider，所以不会丢 daily-basic。delta 和全量替换都使用持久 journal/备份恢复；成功后两份旧 metadata 同时推进。`--dataset` 仍保留原有单数据集行为。
+
+`daily_basic_qlib_features.tar.gz` 是完整 Feature 扩展包；`daily_basic_qlib_features_delta.tar.gz` 才是仅追加新交易日的 temporal delta，二者语义不同。
 
 ## 为什么 daily-basic 要单独安装
 

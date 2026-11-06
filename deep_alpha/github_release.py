@@ -9,6 +9,7 @@ import urllib.parse
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 
 from .errors import DownloadError
@@ -61,7 +62,7 @@ class GitHubReleaseClient:
                 time.sleep(2**attempt)
         raise DownloadError(f"GitHub request failed: {last_error}") from last_error
 
-    def get_asset(self, tag: str | None, asset_name: str) -> ReleaseAsset:
+    def get_assets(self, tag: str | None, asset_names: tuple[str, ...]) -> tuple[str, dict[str, ReleaseAsset]]:
         repo = "/".join(urllib.parse.quote(part, safe="") for part in self.repo.split("/"))
         if tag:
             endpoint = f"releases/tags/{urllib.parse.quote(tag, safe='')}"
@@ -77,18 +78,77 @@ class GitHubReleaseClient:
         release_tag = payload.get("tag_name")
         if not isinstance(release_tag, str) or not release_tag:
             raise DownloadError("Invalid GitHub release response: missing tag_name")
-        matches = [item for item in payload.get("assets", []) if item.get("name") == asset_name]
-        if len(matches) != 1:
+        result: dict[str, ReleaseAsset] = {}
+        items = payload.get("assets", [])
+        if not isinstance(items, list):
+            raise DownloadError("Invalid GitHub release response: assets is not a list")
+        for asset_name in asset_names:
+            matches = [item for item in items if isinstance(item, dict) and item.get("name") == asset_name]
+            if len(matches) > 1:
+                raise DownloadError(f"Multiple assets named {asset_name} in release {release_tag}")
             if not matches:
-                raise DownloadError(f"Asset {asset_name} not found in release {release_tag}")
-            raise DownloadError(f"Multiple assets named {asset_name} in release {release_tag}")
-        item = matches[0]
+                continue
+            item = matches[0]
+            try:
+                size = int(item["size"])
+                url = str(item["browser_download_url"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise DownloadError("Invalid GitHub asset metadata") from exc
+            result[asset_name] = ReleaseAsset(release_tag, asset_name, size, url)
+        return release_tag, result
+
+    def get_asset(self, tag: str | None, asset_name: str) -> ReleaseAsset:
+        release_tag, assets = self.get_assets(tag, (asset_name,))
+        if asset_name not in assets:
+            raise DownloadError(f"Asset {asset_name} not found in release {release_tag}")
+        return assets[asset_name]
+
+    def get_previous_paired_full_release_tag(
+        self,
+        target_tag: str,
+        market_asset: str,
+        daily_basic_asset: str,
+    ) -> str | None:
+        """Return the latest earlier dated Release containing both full assets."""
         try:
-            size = int(item["size"])
-            url = str(item["browser_download_url"])
-        except (KeyError, TypeError, ValueError) as exc:
-            raise DownloadError("Invalid GitHub asset metadata") from exc
-        return ReleaseAsset(release_tag, asset_name, size, url)
+            target_date = date.fromisoformat(target_tag)
+        except ValueError:
+            return None
+        repo = "/".join(urllib.parse.quote(part, safe="") for part in self.repo.split("/"))
+        candidates: list[tuple[date, str]] = []
+        page = 1
+        while True:
+            url = f"https://api.github.com/repos/{repo}/releases?per_page=100&page={page}"
+            try:
+                with self._request(url) as response:
+                    payload = json.load(response)
+            except DownloadError:
+                raise
+            except (ValueError, OSError) as exc:
+                raise DownloadError(f"Invalid GitHub releases response: {exc}") from exc
+            if not isinstance(payload, list):
+                raise DownloadError("Invalid GitHub releases response: expected a list")
+            for release in payload:
+                if not isinstance(release, dict) or release.get("draft") or release.get("prerelease"):
+                    continue
+                tag = release.get("tag_name")
+                if not isinstance(tag, str):
+                    continue
+                try:
+                    release_date = date.fromisoformat(tag)
+                except ValueError:
+                    continue
+                names = {
+                    asset.get("name")
+                    for asset in release.get("assets", [])
+                    if isinstance(asset, dict)
+                }
+                if release_date < target_date and {market_asset, daily_basic_asset} <= names:
+                    candidates.append((release_date, tag))
+            if len(payload) < 100:
+                break
+            page += 1
+        return max(candidates)[1] if candidates else None
 
     def download(
         self,

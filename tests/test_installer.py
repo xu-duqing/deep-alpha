@@ -7,7 +7,13 @@ import pytest
 
 from deep_alpha.errors import DownloadError, ProviderError
 from deep_alpha.github_release import ReleaseAsset
-from deep_alpha.installer import install_archive, read_metadata, validate_provider
+from deep_alpha.installer import (
+    _paired_journal_path,
+    install_archive,
+    read_metadata,
+    recover_paired_install,
+    validate_provider,
+)
 
 
 def make_archive(path: Path, prefix="qlib_bin"):
@@ -49,3 +55,29 @@ def test_rejects_path_traversal(tmp_path):
     with pytest.raises(DownloadError, match="Unsafe"):
         install_archive(archive, tmp_path / "target", "owner/repo", asset, False)
     assert not (tmp_path.parent / "evil").exists()
+
+
+def test_recover_paired_install_restores_backup_when_target_is_missing(tmp_path):
+    target = tmp_path / "cn_data"
+    backup = tmp_path / ".cn_data.backup.interrupted"
+    backup.mkdir()
+    (backup / "marker").write_text("old")
+    _paired_journal_path(target).write_text(json.dumps({"backup": str(backup)}))
+
+    assert recover_paired_install(target)
+    assert (target / "marker").read_text() == "old"
+    assert not backup.exists()
+    assert not _paired_journal_path(target).exists()
+
+
+def test_recover_paired_install_discards_uncommitted_new_target(tmp_path):
+    target = tmp_path / "cn_data"
+    backup = tmp_path / ".cn_data.backup.interrupted"
+    target.mkdir()
+    backup.mkdir()
+    (target / "marker").write_text("new")
+    (backup / "marker").write_text("old")
+    _paired_journal_path(target).write_text(json.dumps({"backup": str(backup)}))
+
+    assert recover_paired_install(target)
+    assert (target / "marker").read_text() == "old"

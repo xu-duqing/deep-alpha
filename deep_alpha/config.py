@@ -8,6 +8,8 @@ from pathlib import Path
 DEFAULT_REPO = "xu-duqing/investment_data"
 DEFAULT_ASSET = "qlib_bin.tar.gz"
 DAILY_BASIC_ASSET = "daily_basic_qlib_features.tar.gz"
+MARKET_DELTA_ASSET = "qlib_bin_delta.tar.gz"
+DAILY_BASIC_DELTA_ASSET = "daily_basic_qlib_features_delta.tar.gz"
 DEFAULT_PROVIDER_URI = Path("~/.qlib/qlib_data/cn_data")
 DEFAULT_FIELDS = ("open", "high", "low", "close", "volume", "amount", "vwap")
 DAILY_BASIC_FIELDS = (

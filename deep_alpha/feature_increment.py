@@ -242,7 +242,7 @@ def read_feature_metadata(provider: Path, required: bool = True) -> dict[str, An
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise ProviderError(f"Invalid daily-basic metadata: {exc}") from exc
-    if value.get("schema_version") != 1 or value.get("dataset") != _DATASET:
+    if value.get("schema_version") not in (1, 2) or value.get("dataset") != _DATASET:
         raise ProviderError("Unsupported daily-basic metadata")
     return value
 

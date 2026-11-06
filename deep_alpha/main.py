@@ -12,10 +12,12 @@ from pathlib import Path
 from deep_alpha import __version__
 from deep_alpha.config import (
     DAILY_BASIC_ASSET,
+    DAILY_BASIC_DELTA_ASSET,
     DAILY_BASIC_FIELDS,
     DEFAULT_ASSET,
     DEFAULT_FIELDS,
     DEFAULT_REPO,
+    MARKET_DELTA_ASSET,
     provider_uri,
 )
 from deep_alpha.errors import ArgumentError, DeepAlphaError, ProviderError
@@ -24,7 +26,19 @@ from deep_alpha.feature_increment import (
     read_feature_metadata,
 )
 from deep_alpha.github_release import GitHubReleaseClient
-from deep_alpha.installer import install_archive, read_metadata, validate_provider
+from deep_alpha.installer import (
+    install_archive,
+    install_paired_archives,
+    read_metadata,
+    recover_paired_install,
+    validate_provider,
+)
+from deep_alpha.temporal_delta import (
+    apply_paired_archives,
+    recover,
+    trusted_paired_release,
+    upgrade_legacy_paired_metadata,
+)
 from deep_alpha.output import emit, render_frame
 from deep_alpha.progress import DownloadProgress
 from deep_alpha.services import (
@@ -68,8 +82,8 @@ def add_release_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--dataset",
         choices=["market", "daily-basic"],
-        default="market",
-        help="Dataset to download or update",
+        default=None,
+        help="Legacy single-dataset download/update mode",
     )
     parser.add_argument("--asset", help="Override the selected dataset's Release asset")
     parser.add_argument("--target-dir")
@@ -93,6 +107,9 @@ def build_parser() -> argparse.ArgumentParser:
     update = subparsers.add_parser("update", help="Update local offline Qlib data")
     add_location(update)
     add_release_options(update)
+    strategy = update.add_mutually_exclusive_group()
+    strategy.add_argument("--full", action="store_true", help="Force paired full update")
+    strategy.add_argument("--delta-only", action="store_true", help="Fail instead of full fallback")
 
     info = subparsers.add_parser("info", help="Show local dataset information")
     add_location(info)
@@ -215,10 +232,102 @@ def download_release(args: argparse.Namespace, asset=None) -> str:
     return f"Installed {dataset} {asset.release_tag} to {target}"
 
 
+def _download_assets(client, assets, directory: Path) -> dict[str, Path]:
+    paths: dict[str, Path] = {}
+    for name, asset in assets.items():
+        path = directory / name
+        client.download(asset, path, DownloadProgress(asset.size).update)
+        paths[name] = path
+    return paths
+
+
+def _installed_paired_release(
+    market_meta: dict,
+    daily_meta: dict,
+    repo: str,
+) -> str | None:
+    return trusted_paired_release(market_meta, daily_meta, repo)
+
+
+def update_paired(args: argparse.Namespace) -> str:
+    target = command_target(args)
+    recover_paired_install(target)
+    validate_provider(target)
+    recover(target)
+    client = GitHubReleaseClient(args.repo, args.timeout)
+    names = (DEFAULT_ASSET, DAILY_BASIC_ASSET, MARKET_DELTA_ASSET, DAILY_BASIC_DELTA_ASSET)
+    release_tag, assets = client.get_assets(args.tag, names)
+    market_meta = read_metadata(target, required=False)
+    daily_meta = read_feature_metadata(target, required=False)
+    installed_release = _installed_paired_release(market_meta, daily_meta, args.repo)
+    if installed_release is None:
+        installed_release = upgrade_legacy_paired_metadata(target, args.repo)
+        if installed_release is not None:
+            LOGGER.info("Upgraded paired local metadata to trusted schema v2: %s", installed_release)
+    if not args.full and installed_release == release_tag:
+        return f"Already up to date: {release_tag}"
+    temporary = Path(tempfile.mkdtemp(prefix="deep-alpha-paired-"))
+    try:
+        delta_names = (MARKET_DELTA_ASSET, DAILY_BASIC_DELTA_ASSET)
+        use_delta = False
+        if not args.full and all(name in assets for name in delta_names):
+            if installed_release is not None:
+                delta_base = client.get_previous_paired_full_release_tag(
+                    release_tag, DEFAULT_ASSET, DAILY_BASIC_ASSET
+                )
+                use_delta = installed_release == delta_base
+                if not use_delta:
+                    LOGGER.info(
+                        "Selecting paired full update before downloads: installed release %s, delta base %s",
+                        installed_release,
+                        delta_base or "unknown",
+                    )
+            else:
+                LOGGER.info(
+                    "Selecting paired full update before downloads: local market and daily-basic are not a paired release"
+                )
+        if use_delta:
+            try:
+                paths = _download_assets(client, {name: assets[name] for name in delta_names}, temporary)
+                print("Applying trusted-version temporal delta...", flush=True)
+                result = apply_paired_archives(paths[MARKET_DELTA_ASSET], paths[DAILY_BASIC_DELTA_ASSET], target, release_tag)
+                stats = result.get("delta_stats", {})
+                if not isinstance(stats, dict):
+                    stats = {}
+                timings = stats.get("timings", {})
+                if not isinstance(timings, dict):
+                    timings = {}
+                timing_text = ", ".join(f"{name}={seconds:.3f}s" for name, seconds in timings.items())
+                return (f"Updated paired data to {release_tag} using temporal delta; "
+                        f"touched={stats.get('touched', 0)} append={stats.get('append', 0)} "
+                        f"create={stats.get('create', 0)}; {timing_text}")
+            except Exception as exc:
+                if args.delta_only:
+                    raise ProviderError(f"Paired temporal delta cannot be applied: {exc}") from exc
+                LOGGER.warning("Temporal delta unavailable; using paired full fallback: %s", exc)
+        elif args.delta_only:
+            if not all(name in assets for name in delta_names):
+                raise ProviderError(f"Paired temporal delta assets are missing from Release {release_tag}")
+            raise ProviderError("Paired temporal delta cannot be applied: local paired metadata v2 is not trusted or does not match the delta base")
+        full_names = (DEFAULT_ASSET, DAILY_BASIC_ASSET)
+        missing = [name for name in full_names if name not in assets]
+        if missing:
+            raise ProviderError(f"Paired full assets are missing from Release {release_tag}: {', '.join(missing)}")
+        paths = _download_assets(client, {name: assets[name] for name in full_names}, temporary)
+        install_paired_archives(paths[DEFAULT_ASSET], paths[DAILY_BASIC_ASSET], target, args.repo, assets[DEFAULT_ASSET], assets[DAILY_BASIC_ASSET])
+        return f"Updated paired data to {release_tag} using full archives"
+    finally:
+        shutil.rmtree(temporary, ignore_errors=True)
+
+
 def run(args: argparse.Namespace) -> str | None:
     if args.command == "download":
         return download_release(args)
     if args.command == "update":
+        if args.dataset is None:
+            return update_paired(args)
+        if args.full or args.delta_only:
+            raise ArgumentError("--full and --delta-only require paired update mode without --dataset")
         target = command_target(args)
         if target.exists():
             validate_provider(target)

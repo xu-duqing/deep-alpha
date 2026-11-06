@@ -1,10 +1,18 @@
 from datetime import date
+import json
 from pathlib import Path
 
 import pytest
 
-from deep_alpha.config import DAILY_BASIC_FIELDS
+from deep_alpha.config import (
+    DAILY_BASIC_ASSET,
+    DAILY_BASIC_DELTA_ASSET,
+    DAILY_BASIC_FIELDS,
+    DEFAULT_ASSET,
+    MARKET_DELTA_ASSET,
+)
 from deep_alpha.errors import ArgumentError, ProviderError
+from deep_alpha.github_release import ReleaseAsset
 from deep_alpha.main import build_parser, default_start_date, download_release, run
 
 
@@ -30,6 +38,22 @@ def test_daily_basic_download_defaults():
     args = build_parser().parse_args(["download", "--dataset", "daily-basic"])
     assert args.dataset == "daily-basic"
     assert args.asset is None
+
+
+def test_update_defaults_to_paired_and_flags_are_exclusive():
+    parser = build_parser()
+    args = parser.parse_args(["update"])
+    assert args.dataset is None
+    assert not args.full and not args.delta_only
+    assert parser.parse_args(["update", "--full"]).full
+    with pytest.raises(SystemExit):
+        parser.parse_args(["update", "--full", "--delta-only"])
+
+
+def test_paired_strategy_flags_reject_legacy_dataset():
+    args = build_parser().parse_args(["update", "--dataset", "market", "--full"])
+    with pytest.raises(ArgumentError, match="paired update mode"):
+        run(args)
 
 
 def test_default_start_date_handles_month_boundaries():
@@ -304,10 +328,96 @@ def test_market_update_adopts_valid_provider_without_metadata(tmp_path, monkeypa
 
     monkeypatch.setattr("deep_alpha.main.GitHubReleaseClient", Client)
     monkeypatch.setattr("deep_alpha.main.download_release", fake_download)
-    args = build_parser().parse_args(["update", "--target-dir", str(provider)])
+    args = build_parser().parse_args(["update", "--dataset", "market", "--target-dir", str(provider)])
 
     assert run(args) == "selected 2026-07-28"
     assert calls == [
         ("asset", None, "qlib_bin.tar.gz"),
         ("download", True, "2026-07-28"),
+    ]
+
+
+def _write_paired_metadata(provider: Path, release_tag: str, repo: str = "owner/repo") -> None:
+    calendar = (provider / "calendars/day.txt").read_text().splitlines()
+    common = {"schema_version": 2, "repo": repo, "release_tag": release_tag,
+              "paired_release_tag": release_tag, "transaction_id": "trusted-tx",
+              "state": "committed", "calendar_count": len(calendar), "calendar_end": calendar[-1]}
+    (provider / ".investment_data_meta.json").write_text(json.dumps({**common, "dataset": "cn_stock_1d"}))
+    (provider / ".daily_basic_meta.json").write_text(json.dumps({**common, "dataset": "daily_basic"}))
+
+
+def _release_assets(tag: str) -> dict[str, ReleaseAsset]:
+    return {
+        name: ReleaseAsset(tag, name, 3, f"https://example.test/{name}")
+        for name in (DEFAULT_ASSET, DAILY_BASIC_ASSET, MARKET_DELTA_ASSET, DAILY_BASIC_DELTA_ASSET)
+    }
+
+
+def test_paired_update_skips_delta_download_when_installed_release_is_not_delta_base(tmp_path, monkeypatch):
+    provider = tmp_path / "provider"
+    make_provider(provider)
+    _write_paired_metadata(provider, "2026-08-25")
+    calls = []
+
+    class Client:
+        def __init__(self, repo, timeout):
+            pass
+
+        def get_assets(self, tag, names):
+            return "2026-11-02", _release_assets("2026-11-02")
+
+        def get_previous_paired_full_release_tag(self, target, market, daily):
+            calls.append(("base", target))
+            return "2026-10-30"
+
+        def download(self, asset, destination, progress):
+            calls.append(("download", asset.name))
+            destination.write_bytes(b"abc")
+
+    monkeypatch.setattr("deep_alpha.main.GitHubReleaseClient", Client)
+    monkeypatch.setattr("deep_alpha.main.install_paired_archives", lambda *args: calls.append(("full",)))
+
+    result = run(build_parser().parse_args(["update", "--repo", "owner/repo", "--target-dir", str(provider)]))
+
+    assert result == "Updated paired data to 2026-11-02 using full archives"
+    assert calls == [
+        ("base", "2026-11-02"),
+        ("download", DEFAULT_ASSET),
+        ("download", DAILY_BASIC_ASSET),
+        ("full",),
+    ]
+
+
+def test_paired_update_downloads_delta_when_installed_release_matches_base(tmp_path, monkeypatch):
+    provider = tmp_path / "provider"
+    make_provider(provider)
+    _write_paired_metadata(provider, "2026-10-30")
+    calls = []
+
+    class Client:
+        def __init__(self, repo, timeout):
+            pass
+
+        def get_assets(self, tag, names):
+            return "2026-11-02", _release_assets("2026-11-02")
+
+        def get_previous_paired_full_release_tag(self, target, market, daily):
+            return "2026-10-30"
+
+        def download(self, asset, destination, progress):
+            calls.append(("download", asset.name))
+            destination.write_bytes(b"abc")
+
+    monkeypatch.setattr("deep_alpha.main.GitHubReleaseClient", Client)
+    monkeypatch.setattr("deep_alpha.main.apply_paired_archives", lambda *args: (calls.append(("delta",)) or {
+        "delta_stats": {"touched": 2, "append": 2, "create": 0, "timings": {"total": 0.1}}
+    }))
+
+    result = run(build_parser().parse_args(["update", "--repo", "owner/repo", "--target-dir", str(provider)]))
+
+    assert result == "Updated paired data to 2026-11-02 using temporal delta; touched=2 append=2 create=0; total=0.100s"
+    assert calls == [
+        ("download", MARKET_DELTA_ASSET),
+        ("download", DAILY_BASIC_DELTA_ASSET),
+        ("delta",),
     ]
